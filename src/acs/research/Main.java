@@ -1,37 +1,112 @@
 package acs.research;
 
-import java.io.*;
-import java.security.Security;
-
 import org.bouncycastle.crypto.InvalidCipherTextException;
-import org.bouncycastle.jce.provider.BouncyCastleProvider;
 
-import javax.crypto.ShortBufferException;
+import java.io.*;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.TimeUnit;
+
 
 public class Main {
 
-    private static final int MYTHREADS = 30;
-    private static final String FILENAME = "/Users/ella/IdeaProjects/Cercetare/resources/" + "example.pdf";
+    private static final int BLOCK_SIZE = 256 * 2 * 1024;
+    private static final String ENCRYPT_FILENAME = "resources/" + "example.pdf";
+    private static final String DECRYPT_FILENAME = "encrypted.txt";
+    private static int noTasks = 0;
 
-    public static void main(String[] args) throws IOException, ShortBufferException, InvalidCipherTextException {
+    private static int splitFile(InputStream fis, String outFileName, int size) throws IOException {
+        byte[] buf = new byte[size];
+        int noBytesRead;
+        int index = 0;
+        while((noBytesRead = fis.read(buf)) >= 0) {
+            FileOutputStream fos = new FileOutputStream(outFileName + index + ".txt");
+            fos.write(buf, 0, noBytesRead);
+            fos.flush();
+            fos.close();
+            ++index;
+        }
+        fis.close();
+        return index;
+    }
 
-        Security.addProvider(new BouncyCastleProvider());
+    private static void mergeFile(OutputStream fos, String inFileName, int size) throws IOException {
+        for (int index = 0; index < noTasks; ++index) {
+            File file = new File(inFileName + index + ".txt");
+            FileInputStream fis = new FileInputStream(file);
+            byte[] buf = new byte[size];
+            int noBytesRead = 0;
+            long noBytesWritten = 0;
+            long noBytesTotal = file.length();
+            while(noBytesWritten < noBytesTotal) {
+                noBytesRead = fis.read(buf);
+                fos.write(buf, 0, noBytesRead);
+                noBytesWritten += noBytesRead;
+            }
+            fis.close();
+            file.delete();
+        }
+        fos.close();
+    }
 
-        FileInputStream fis =
-                new FileInputStream(new File(FILENAME));
-        FileOutputStream fos =
-                new FileOutputStream(new File("encrypted.txt"));
+    public static void encrypt() throws IOException, InvalidCipherTextException {
+        System.out.println("Encryption Started");
 
-        BouncyCastleAPI_AES_CBC bc = new BouncyCastleAPI_AES_CBC();
-        bc.InitCiphers();
+        ExecutorService executorService = Executors.newFixedThreadPool(2);
 
-        //encryption
-        bc.CBCEncrypt(fis, fos);
+        noTasks     = splitFile(new FileInputStream(new File(ENCRYPT_FILENAME)), "fragment", BLOCK_SIZE);
 
-        fis = new FileInputStream(new File("encrypted.txt"));
-        fos = new FileOutputStream(new File("clear_test.pdf"));
+        for (int index = 0; index < noTasks; ++index) {
 
-        //decryption
-        bc.CBCDecrypt(fis, fos);
+            Runnable task = new EncryptionThread(index);
+            executorService.submit(task);
+        }
+        executorService.shutdown();
+        try {
+            executorService.awaitTermination(Long.MAX_VALUE, TimeUnit.NANOSECONDS);
+        } catch (InterruptedException e) {
+            e.printStackTrace();
+        }
+        for (int index = 0; index < noTasks; ++index) {
+            new File("fragment" + index + ".txt").delete();
+        }
+
+        FileOutputStream fos = new FileOutputStream(new File("encrypted.txt"));
+        mergeFile(fos, "encrypted", BLOCK_SIZE + 16);
+    }
+
+    public static void decrypt() throws IOException {
+        System.out.println("Decryption started.");
+        ExecutorService executorService = Executors.newFixedThreadPool(2);
+
+        noTasks = splitFile(new FileInputStream(new File(DECRYPT_FILENAME)), "encrypted", BLOCK_SIZE + 16);
+
+        for (int index = 0; index < noTasks; ++index) {
+
+            Runnable task = new DecryptionThread(index);
+            executorService.submit(task);
+        }
+        executorService.shutdown();
+        try {
+            executorService.awaitTermination(Long.MAX_VALUE, TimeUnit.NANOSECONDS);
+        } catch (InterruptedException e) {
+            e.printStackTrace();
+        }
+        for (int index = 0; index < noTasks; ++index) {
+            new File("encrypted" + index + ".txt").delete();
+        }
+
+        FileOutputStream fos = new FileOutputStream(new File("decrypted.pdf"));
+
+        mergeFile(fos, "decrypted", BLOCK_SIZE);
+
+        System.out.println("Merged file.");
+    }
+
+    public static void main(String[] args) throws IOException, InvalidCipherTextException {
+
+        System.out.println("Starting");
+        encrypt();
+        decrypt();
     }
 }
